@@ -1,3 +1,6 @@
+run: src/manage.py
+	python src/manage.py runserver 0.0.0.0:8000
+
 install: requirements.txt
 	pip install -r requirements.txt
 
