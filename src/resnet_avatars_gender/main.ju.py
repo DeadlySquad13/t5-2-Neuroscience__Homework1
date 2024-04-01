@@ -1,5 +1,5 @@
 # %% [markdown]
-# # Лабораторная работа №4
+# # Домашняя работа №1
 
 # %%
 # Loading extension for reloading editable packages (pip install -e .)
@@ -12,10 +12,7 @@
 
 # %% [markdown]
 """
-Вариант:
-1. Номер группы + 15 = 2 + 15 = 17
-2. Номер варианта + 56 = 14 + 56 = 70
-3. ИУ5 (Номер варианта + 21) = 14 + 21 = 35
+Задание: 
 """
 
 # %%
@@ -43,71 +40,61 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # %% [markdown]
 """
-## Классификация изображений CIFAR100 с использованием переноса обучения с ResNet
-### Загрузка и распаковка набора данных CIFAR100
+## Классификация изображений с использованием переноса обучения с ResNet
+### Загрузка и распаковка набора данных
 """
 
 # %%
-import os  # noqa
-import shutil  # noqa
-import urllib  # noqa
-from pathlib import Path  # noqa
+from glob import glob  # noqa
+import os
+from pathlib import Path
 
-url = "https://www.cs.toronto.edu/~kriz/cifar-100-python.tar.gz"
-filename = "cifar-100-python.tar.gz"
-model_path = Path("data")
+heigth_width = 32
 
-model_path.mkdir(exist_ok=True)
+CLASSES = ["man", "woman", "unknown"]  # Здесь требуется указать ваши классы
 
-file_path = model_path / filename
+images = []
+images_t = []
+classes = []
+classes_t = []
 
-if not os.path.isfile(file_path):
-    urllib.request.urlretrieve(url, file_path)
-    shutil.unpack_archive(file_path, extract_dir=model_path)
-    file_path.unlink()  # Remove archive after extracting it.
+data_path = Path('../../data')
+
+for CLASS in range(0, len(CLASSES)):
+    class_path = f"{str(data_path)}/{CLASSES[CLASS]}"
+    class_img_path = f"{class_path}/*.*"
+    i = 0
+    for photo in glob(class_img_path):
+        i += 1
+        img = Image.open(photo).convert("RGB")
+        img = img.resize((heigth_width, heigth_width), Image.LANCZOS)
+        if i > int(len(os.listdir(class_path)) * 0.8):
+            images_t.append(np.asarray(img))
+            classes_t.append(np.asarray(CLASS))
+        else:
+            images.append(np.asarray(img))
+            classes.append(np.asarray(CLASS))
+
+
+train_X = np.array(images)
+train_y = np.array(classes)
+
+test_X = np.array(images_t)
+test_y = np.array(classes_t)
+train_X, train_y, test_X, test_y
 
 
 # %% [markdown]
 # ### Чтение тренировочной и тестовой выборки
 
-
 # %%
+from pathlib import Path  # noqa
+
+
 def stem_extensions(filename: Path):
     extensions = "".join(filename.suffixes)
 
     return str(filename).removesuffix(extensions)
-
-
-# %%
-dataset_path = Path(stem_extensions(file_path))
-
-with open(dataset_path / "train", "rb") as f:
-    data_train = pickle.load(f, encoding="latin1")
-with open(dataset_path / "test", "rb") as f:
-    data_test = pickle.load(f, encoding="latin1")
-
-# Классы по варианту.
-CLASSES = [17, 70, 35]
-
-train_X_raw = data_train["data"].reshape(-1, 3, 32, 32)
-train_X_raw = np.transpose(train_X_raw, [0, 2, 3, 1])  # NCHW -> NHWC
-train_y_raw = np.array(data_train["fine_labels"])
-mask = np.isin(train_y_raw, CLASSES)
-train_X = train_X_raw[mask].copy()
-train_y = train_y_raw[mask].copy()
-train_y = np.unique(train_y, return_inverse=1)[1]
-del data_train
-
-test_X = data_test["data"].reshape(-1, 3, 32, 32)
-test_X = np.transpose(test_X, [0, 2, 3, 1])
-test_y = np.array(data_test["fine_labels"])
-mask = np.isin(test_y, CLASSES)
-test_X = test_X[mask].copy()
-test_y = test_y[mask].copy()
-test_y = np.unique(test_y, return_inverse=1)[1]
-del data_test
-
-# print(train_y_raw.tolist())
 
 
 # %%
@@ -145,11 +132,11 @@ for class_id in CLASSES:
     image_indices = []
 
     while i > 0:
-        image_index_for_class = train_y_raw.tolist().index(
+        image_index_for_class = train_y.tolist().index(
             class_id, image_index_for_class + 1
         )
         image_indices.append(image_index_for_class)
-        class_images.append(createImage(train_X_raw[image_index_for_class]))
+        class_images.append(createImage(train_X[image_index_for_class]))
         i -= 1
     grid_display(class_images, image_indices, number_of_images_per_class_to_show)
     plt.show()
@@ -294,45 +281,6 @@ test_summary_writer = SummaryWriter(log_dir=test_run_path)
 # Обучим нашу модель сначала с заморозкой, затем полностью с разморозкой.
 
 
-# %%
-def compute_RF_numerical(net, img_np):
-    """
-    @param net: Pytorch network
-    @param img_np: numpy array to use as input to the networks,
-      it must be full of ones and with the correct
-    shape.
-    """
-
-    def weights_init(m):
-        classname = m.__class__.__name__
-        if classname.find("Conv") != -1:
-            m.weight.data.fill_(1)
-            m.bias.data.fill_(0)
-
-    # net.apply(weights_init)
-    img_ = torch.tensor(torch.from_numpy(img_np).float(), requires_grad=True)
-    out_cnn = net(img_.to(device))
-    out_shape = out_cnn.size()
-    ndims = len(out_cnn.size())
-    grad = torch.zeros(out_cnn.size())
-    l_tmp = []
-    for i in range(ndims):
-        if i == 0 or i == 1:  # batch or channel
-            l_tmp.append(0)
-        else:
-            l_tmp.append(out_shape[i] / 2)
-
-    grad[tuple(l_tmp)] = 1
-    out_cnn.backward(gradient=grad.to(device))
-    grad_np = img_.grad[0, 0].data.detach().cpu().numpy()
-    idx_nonzeros = np.where(grad_np != 0)
-    RF = [np.max(idx) - np.min(idx) + 1 for idx in idx_nonzeros]
-
-    return RF
-
-
-compute_RF_numerical(model, np.zeros((1, 3, 1024, 1024)))
-
 # %% [markdown]
 # ### Замена полносвязного слоя
 
@@ -367,7 +315,7 @@ def freeze(keep_last=2):
     return new_model
 
 
-new_model = freeze(keep_last=5)
+new_model = freeze(keep_last=2)
 summary(new_model, input_size=(32, 32, 3))
 
 # %% [markdown]
@@ -610,26 +558,20 @@ summary(new_model, input_size=(32, 32, 3))
 dataloader = train_classifier(new_model)
 compare_classification_reports(dataloader)
 
-# %% [markdown]
-"""
-Попробуем подобрать оптимальный параметр `keep_last`.
-"""
-
 # %%
-new_model = freeze(keep_last=10)  # More than total.
+new_model = freeze(keep_last=66)  # More than total.
 summary(new_model, input_size=(32, 32, 3))
 
 # %%
-dataloader = train_classifier(new_model)
+dataloader = train_classifier(new_model, epochs=240)
 compare_classification_reports(dataloader)
-
 
 # %% [markdown]
 # ## Экспорт модели
 
 # %%
 model_path = Path("models")
-model_filename = "cifar100_resnet.pt"
+model_filename = "resnet_avatars_gender.pt"
 
 model_path.mkdir(exist_ok=True)
 
@@ -642,7 +584,7 @@ new_model_2.eval()
 
 # %%
 # входной тензор для модели
-onnx_model_filename = "cifar100_resnet.onnx"
+onnx_model_filename = "resnet_avatars_gender.onnx"
 x = torch.randn(1, 32, 32, 3, requires_grad=True).to(device)
 torch_out = new_model(x)
 
